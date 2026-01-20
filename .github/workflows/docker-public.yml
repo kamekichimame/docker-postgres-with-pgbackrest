@@ -47,7 +47,7 @@ jobs:
         echo "Building with base PostgreSQL version: $BASE_TAG"
         
         # 1. ベースイメージタグ付き
-        docker build -t ghcr.io/${{ github.repository }}:$BASE_TAG ./postgres
+        docker build -t ghcr.io/${{ github.repository }}:$BASE_TAG .
         docker push ghcr.io/${{ github.repository }}:$BASE_TAG
         
         # 2. latestタグ（常に最新）
