@@ -1,0 +1,69 @@
+# .github/workflows/docker.yml
+name: Build on tag only
+
+# タグ付きpushのみ実行（開発中のプッシュでは実行しない）
+on:
+  push:
+    tags: [ 'v*' ]          # v1.0.0, v1.2.3など
+  # branchesは指定しない → 通常のプッシュでは実行されない
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Extract base image tag from Dockerfile
+      id: extract-tag
+      run: |
+        # Dockerfileからベースイメージタグを抽出
+        BASE_TAG=$(grep -E '^FROM postgres:' ./postgres/Dockerfile | \
+                  head -1 | \
+                  sed 's/^FROM postgres://' | \
+                  sed 's/#.*$//' | \
+                  xargs)
+        
+        # デフォルト値（念のため）
+        if [ -z "$BASE_TAG" ]; then
+          BASE_TAG="18-alpine"
+        fi
+        
+        echo "Extracted base tag: $BASE_TAG"
+        echo "base_tag=$BASE_TAG" >> $GITHUB_OUTPUT
+    
+    - name: Login to GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Build and push Docker images
+      env:
+        BASE_TAG: ${{ steps.extract-tag.outputs.base_tag }}
+      run: |
+        echo "Building with base PostgreSQL version: $BASE_TAG"
+        
+        # 1. ベースイメージタグ付き
+        docker build -t ghcr.io/${{ github.repository }}:$BASE_TAG ./postgres
+        docker push ghcr.io/${{ github.repository }}:$BASE_TAG
+        
+        # 2. latestタグ（常に最新）
+        docker tag ghcr.io/${{ github.repository }}:$BASE_TAG \
+          ghcr.io/${{ github.repository }}:latest
+        docker push ghcr.io/${{ github.repository }}:latest
+        
+        # 4. セマンティックバージョンがある場合
+        if [[ ${{ github.ref }} == refs/tags/v* ]]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+          docker tag ghcr.io/${{ github.repository }}:$BASE_TAG \
+            ghcr.io/${{ github.repository }}:$VERSION
+          docker push ghcr.io/${{ github.repository }}:$VERSION
+          
+          # バージョンとベースタグの組み合わせ
+          docker tag ghcr.io/${{ github.repository }}:$BASE_TAG \
+            ghcr.io/${{ github.repository }}:$BASE_TAG-$VERSION
+          docker push ghcr.io/${{ github.repository }}:$BASE_TAG-$VERSION
+        fi

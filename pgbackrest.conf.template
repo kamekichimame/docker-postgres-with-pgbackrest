@@ -1,0 +1,12 @@
+[global]
+repo1-path=/var/lib/pgbackrest/repo
+repo1-retention-full=2
+process-max=4
+lock-path=/var/lib/pgbackrest/lock
+spool-path=/var/lib/pgbackrest/spool
+log-level-file=off
+log-level-console=info
+
+[${ENV_PGBACKREST_STANZA}]
+pg1-path=${ENV_PGDATA}
+pg1-user=${ENV_POSTGRES_USER}
