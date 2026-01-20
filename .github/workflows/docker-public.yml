@@ -19,7 +19,7 @@ jobs:
       id: extract-tag
       run: |
         # Dockerfileからベースイメージタグを抽出
-        BASE_TAG=$(grep -E '^FROM postgres:' ./postgres/Dockerfile | \
+        BASE_TAG=$(grep -E '^FROM postgres:' ./Dockerfile | \
                   head -1 | \
                   sed 's/^FROM postgres://' | \
                   sed 's/#.*$//' | \
