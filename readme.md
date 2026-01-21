@@ -1,9 +1,8 @@
 # PostgreSQL with pgBackRest Docker Image
-Dockerイメージ: `yourusername/postgres-pgbackrest`
-PostgreSQL公式イメージにpgBackRestバックアップ機能を統合したDockerイメージです。自動バックアップとWALアーカイブをサポートします。
-<br><br>
-## クイックスタート
-### 基本使用
+Docker image: `yourusername/postgres-pgbackrest`
+This image extends the official PostgreSQL image with integrated pgBackRest for automated backups and WAL archiving.
+## Quick Start
+### Basic Usage
 
 ```bash
 docker run -d \
@@ -14,7 +13,7 @@ docker run -d \
 ```
 
 &nbsp;
-### docker-compose.yml 例
+### docker-compose.yml Example
 
 ```yaml
 services:
@@ -37,85 +36,69 @@ volumes:
 ```
 
 &nbsp;
-## 環境変数
-### PostgreSQL環境変数
-- `POSTGRES_PASSWORD` - **必須** - PostgreSQLスーパーユーザーパスワード
-- `POSTGRES_USER` - (デフォルト: `postgres`) - PostgreSQLユーザー名
-- `POSTGRES_DB` - (デフォルト: `POSTGRES_USER`と同じ) - 作成するデータベース名
-- `PGDATA` - (デフォルト: `/var/lib/postgresql/data`) - データディレクトリ
-### pgBackRest環境変数
-- `ENV_PGBACKREST_STANZA` - (デフォルト: `${POSTGRES_DB:-postgres}`) - pgBackRestスタンザ名。バックアップの論理グループ。
-- `ENV_PGBACKREST_CRON_SCHEDULE` - (デフォルト: `"0 0 * * *"`) - バックアップスケジュール（cron形式）。
-    - `"0 2 * * *"` = 毎日2:00
-    - `"*/30 * * * *"` = 30分ごと
-    - `"0 */6 * * *"` = 6時間ごと
-- `ENV_PGBACKREST_CONFIG_FILE_PATH` - (デフォルト: `/etc/pgbackrest/conf/pgbackrest.conf`) - 設定ファイルパス
+## Environment Variables
+### PostgreSQL Environment Variables
+- `POSTGRES_PASSWORD` - **Required** - Superuser password
+- `POSTGRES_USER` - (default: `postgres`) - PostgreSQL username
+- `POSTGRES_DB` - (default: same as `POSTGRES_USER`) - Database name to create
+- `PGDATA` - (default: `/var/lib/postgresql/data`) - Data directory path
+### pgBackRest Environment Variables
+- `ENV_PGBACKREST_STANZA` - (default: `${POSTGRES_DB:-postgres}`) - pgBackRest stanza name (logical backup group)
+- `ENV_PGBACKREST_CRON_SCHEDULE` - (default: `"0 0 * * *"`) - Backup schedule in cron format (supercronic)
+- `ENV_PGBACKREST_CONFIG_FILE_PATH` - (default: `/etc/pgbackrest/conf/pgbackrest.conf`) - pgBackRest config file path
+- `ENV_FULL_BACKUP_INTERVAL_DAYS` - (default: 7) - Interval (days) to force full backup instead of incremental
+- `ENV_PGBACKREST_FULLBACKUP_ON_STARTUP` - (default: true) - Whether to perform a full backup on container startup
 
 &nbsp;
-## バックアップスケジュール例
+## Backup Schedule Examples
 ```bash
-# 毎日午前2時
+# Daily at 2:00 AM
 ENV_PGBACKREST_CRON_SCHEDULE="0 2 * * *"
 
-# 6時間ごと
+# Every 6 hours
 ENV_PGBACKREST_CRON_SCHEDULE="0 */6 * * *"
 
-# 30分ごと（開発用）
+# Every 30 minutes (development/testing)
 ENV_PGBACKREST_CRON_SCHEDULE="*/30 * * * *"
 
-# 毎週日曜日午前3時
+# Every Sunday at 3:00 AM
 ENV_PGBACKREST_CRON_SCHEDULE="0 3 * * 0"
 ```
 
 &nbsp;
-## ボリューム設定
-### 必須ボリューム
-
+## Custom Configuration Files
+### PostgreSQL Custom Config Example
 ```yaml
 volumes:
-  - postgres_data:/var/lib/postgresql/data    # PostgreSQLデータ
-  - pgbackrest_repo:/var/lib/pgbackrest       # pgBackRestリポジトリ
+  - ./postgres_custom.conf:/etc/postgresql/postgresql.conf:ro
+command: postgres -c config_file=/etc/postgresql/postgresql.conf
 ```
-### オプションボリューム
+PostgreSQL reads `/etc/postgresql/postgresql.conf` if it exists. The image automatically includes pgBackRest required settings (archive_mode=on, etc.) via overrides.
+
+### pgBackRest Custom Config Example
 ```yaml
-# カスタムconfigファイル
+environment:
+  ENV_PGBACKREST_STANZA: mystanza
 volumes:
-  - ./custom.conf:/etc/postgresql/postgresql.conf:ro
-  - ./pgbackrest.conf:/etc/pgbackrest/conf/pgbackrest.conf:ro
+  - ./pgbackrest_custom.conf:/etc/pgbackrest/conf/pgbackrest.conf
 ```
 
 &nbsp;
-## バックアップ管理
-### 手動バックアップ
+## Backup Management
+### Manual Backup
 ```bash
 docker exec <container> pgbackrest --stanza=<stanza-name> backup
 ```
-### バックアップ情報確認
+### Check Backup Info
 ```bash
 docker exec <container> pgbackrest info
 ```
-### リストア
+### Restore
 ```bash
-# 最新バックアップから
+# Restore from latest backup
 docker exec <container> pgbackrest --stanza=<stanza> restore
-  
-# 特定の時点にリストア
+
+# Restore to specific point in time
 docker exec <container> pgbackrest --stanza=<stanza> \
-  --type=time --target="2024-01-19 12:00:00" restore
-```
-
-&nbsp;
-## ログ確認
-```bash
-# すべてのログ
-docker logs <container>
-
-# バックアップ関連ログのみ
-docker logs <container> | grep -E "(backup|archive)"
-
-# PostgreSQLログのみ
-docker logs <container> | grep "\[postgres\]"
-
-# バックアップジョブログのみ
-docker logs <container> | grep "\[pgbackrest-cron\]"
+  --type=time --target="2026-01-19 12:00:00" restore
 ```

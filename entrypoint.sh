@@ -21,7 +21,7 @@ export ENV_PGBACKREST_CONFIG_FILE_PATH=${ENV_PGBACKREST_CONFIG_FILE_PATH:-/etc/p
 PGBACKREST_TEMPLATE_CONFIG="/etc/pgbackrest/conf/pgbackrest.conf.template"
 
 if [ ! -f "$ENV_PGBACKREST_CONFIG_FILE_PATH" ]; then
-  echo "[$self_filename] Config file not found, generating from template..."
+  echo "[$self_filename] pgBackRest config file not found, generating from template..."
   mkdir -p "$(dirname "$ENV_PGBACKREST_CONFIG_FILE_PATH")"
 
   # envsubstで変数を置き換え
@@ -29,50 +29,21 @@ if [ ! -f "$ENV_PGBACKREST_CONFIG_FILE_PATH" ]; then
     < "$PGBACKREST_TEMPLATE_CONFIG" \
     > "$ENV_PGBACKREST_CONFIG_FILE_PATH"
   
-  chown postgres:postgres "$ENV_PGBACKREST_CONFIG_FILE_PATH"
-  chmod 640 "$ENV_PGBACKREST_CONFIG_FILE_PATH"
-  echo "[$self_filename] Config file created: $ENV_PGBACKREST_CONFIG_FILE_PATH"
+  echo "[$self_filename] pgBackRest config file created: $ENV_PGBACKREST_CONFIG_FILE_PATH"
 fi
 
-
-# PgBackRestに必要な項目を追加したPostgres用設定ファイル postgresql-mandatory.conf を作成
-# postgresql-mandatory.confはユーザーのpostgresql.confをインクルードしてるよ
-# echo "[$self_filename] Creating PostgreSQL configuration..."
-# PG_TEMPLATE_CONFIG_FILE_PATH="/etc/postgresql/postgresql-mandatory.conf.template"
-# PG_USER_CONFIG_FILE_PATH="/etc/postgresql/postgresql.conf"
-# PG_CONFIG_FILE_PATH="/etc/postgresql/postgresql-mandatory.conf"
-
-# # インクルード対象のconfを決定（優先順位）
-# if [ -f "$PG_USER_CONFIG_FILE_PATH" ]; then
-#   ENV_PG_INCLUDE_CONFIG_FILE_PATH="$PG_USER_CONFIG_FILE_PATH"
-#   echo "[$self_filename] Custom PostgreSQL configuration detected, will include: $ENV_PG_INCLUDE_CONFIG_FILE_PATH"
-# else
-#   ENV_PG_INCLUDE_CONFIG_FILE_PATH="$PGDATA/postgresql.conf"
-#   echo "[$self_filename] No custom configuration found, will include default: $ENV_PG_INCLUDE_CONFIG_FILE_PATH"
-# fi
-# export ENV_PG_INCLUDE_CONFIG_FILE_PATH
-
-# mkdir -p "$(dirname "$PG_CONFIG_FILE_PATH")"
-
-# # envsubstで変数を置き換えて、postgresのconfigを作る
-# envsubst '${ENV_PG_INCLUDE_CONFIG_FILE_PATH} ${ENV_PGBACKREST_CONFIG_FILE_PATH} ${ENV_PGBACKREST_STANZA} ${ENV_PGDATA}' \
-#   < "$PG_TEMPLATE_CONFIG_FILE_PATH" \
-#   > "$PG_CONFIG_FILE_PATH"
-
-# chown postgres:postgres "$PG_CONFIG_FILE_PATH"
-# chmod 640 "$PG_CONFIG_FILE_PATH"
-# echo "[$self_filename] PostgreSQL configuration created: $PG_CONFIG_FILE_PATH"
+echo "[$self_filename] Setting permission to pgBackRest config file"
+chown postgres:postgres "$ENV_PGBACKREST_CONFIG_FILE_PATH"
+chmod 640 "$ENV_PGBACKREST_CONFIG_FILE_PATH"
 
 # pgbackrestの初回セットアップをバックグラウンドで起動
 echo "[$self_filename] Starting pgBackRest setup script..."
-/setup.sh "$ENV_PGBACKREST_CONFIG_FILE_PATH" "$ENV_PGBACKREST_STANZA" &
+#/setup.sh "$ENV_PGBACKREST_CONFIG_FILE_PATH" "$ENV_PGBACKREST_STANZA" &
+su -s /bin/bash postgres -c "/setup.sh '${ENV_PGBACKREST_CONFIG_FILE_PATH}' '${ENV_PGBACKREST_STANZA}'" &
 
 # PostgreSQLをフォアグラウンドで起動（これがコンテナのメイン）
 echo "[$self_filename] Starting PostgreSQL..."
-#exec /usr/local/bin/docker-entrypoint.sh postgres "$@" -c config_file="$PG_CONFIG_FILE_PATH" 2>&1 | sed 's/^/[postgres] /'
 ARCHIVE_COMMAND="pgbackrest --config=${ENV_PGBACKREST_CONFIG_FILE_PATH} --stanza=${ENV_PGBACKREST_STANZA} --pg1-path=${ENV_PGDATA} archive-push %p"
-
-
 # ちなみに $@ にはDockerfileに書いているCMD(postgres)やユーザー指定のCMDが入るよ
 exec /usr/local/bin/docker-entrypoint.sh "$@" \
   -c archive_mode=on \

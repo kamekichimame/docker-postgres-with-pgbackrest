@@ -5,22 +5,27 @@ set -euo pipefail
 PGBACKREST_CONFIG_FILE_PATH="$1"
 PGBACKREST_STANZA="$2"
 CRON_SCHEDULE=${ENV_PGBACKREST_CRON_SCHEDULE:-"0 0 * * *"}
+BACKUP_ON_STARTUP=${ENV_PGBACKREST_FULLBACKUP_ON_STARTUP:-true}
 
-# 自分のファイル名(setup.sh)を取得
-self_filename=$(basename "${BASH_SOURCE[0]}");
+# pgBackRestフルバックアップ日時記録ファイル
+FULL_TIMESTAMP_FILE="$PGDATA/full_backup_timestamp.txt"
 
+# ログのプレフィックスを設定
+LOG_PREFIX="setup.sh"
+
+# どうにかしてコンテナ終了を試みる関数
 terminate_container() {
   local reason="$1"
-  echo "[$self_filename] ERROR: $reason"
-  echo "[$self_filename] Forcefully terminating container..."
+  echo "[$LOG_PREFIX] ERROR: $reason"
+  echo "[$LOG_PREFIX] Forcefully terminating container..."
   
   # 方法1: PostgreSQLプロセスを直接終了
-  echo "[$self_filename] Killing PostgreSQL processes..."
+  echo "[$LOG_PREFIX] Killing PostgreSQL processes..."
   pkill -TERM postgres 2>/dev/null || true
   pkill -TERM postmaster 2>/dev/null || true
-  
+
   # 方法2: PID 1にシグナル送信（複数試す）
-  echo "[$self_filename] Sending signals to PID 1..."
+  echo "[$LOG_PREFIX] Sending signals to PID 1..."
   kill -TERM 1 2>/dev/null || true
   sleep 1
   kill -HUP 1 2>/dev/null || true
@@ -30,108 +35,99 @@ terminate_container() {
   kill -KILL 1 2>/dev/null || true
   
   # 方法3: 強制終了（最後の手段）
-  echo "[$self_filename] Forcing exit..."
+  echo "[$LOG_PREFIX] Forcing exit..."
   exit 1
 }
 
 # PostgreSQL起動完了を待機
-echo "[$self_filename] Waiting for PostgreSQL to start..."
+echo "[$LOG_PREFIX] Waiting for PostgreSQL to start..."
 until pg_isready -h /var/run/postgresql -p 5432 -U postgres; do
   sleep 2
 done
-echo "[$self_filename] PostgreSQL is ready"
+echo "[$LOG_PREFIX] PostgreSQL is ready"
 
 # lock-path/spool-pathを強制的に設定
 LOCK_PATH="/var/lib/pgbackrest/lock"
 SPOOL_PATH="/var/lib/pgbackrest/spool"
 
 # ディレクトリ準備
-echo "[$self_filename] Creating directories: $LOCK_PATH, $SPOOL_PATH"
+echo "[$LOG_PREFIX] Creating directories: $LOCK_PATH, $SPOOL_PATH"
 mkdir -p "$LOCK_PATH" "$SPOOL_PATH"
 chown -R postgres:postgres "$LOCK_PATH" "$SPOOL_PATH"
 chmod 700 "$LOCK_PATH" "$SPOOL_PATH"
 
 # stanza作成 → 失敗したらコンテナ終了
-echo "[$self_filename] Creating pgBackRest stanza: $PGBACKREST_STANZA"
+echo "[$LOG_PREFIX] Creating pgBackRest stanza: $PGBACKREST_STANZA"
 if ! pgbackrest --config="$ENV_PGBACKREST_CONFIG_FILE_PATH" --stanza="$ENV_PGBACKREST_STANZA" stanza-create; then
-  echo "[$self_filename] ERROR: pgBackRest stanza creation failed"
+  echo "[$LOG_PREFIX] ERROR: pgBackRest stanza creation failed"
   #kill -TERM 1   # PID 1（PostgreSQL）にSIGTERM → graceful shutdown → コンテナ終了
-  terminate_container "Invalid stanza creation failed"
-  #exit 1
+  terminate_container "Invalid stanza: Creation failed"
 fi
 
 # 構成チェック → 失敗したらコンテナ終了
-echo "[$self_filename] Verifying configuration for stanza: $PGBACKREST_STANZA"
+echo "[$LOG_PREFIX] Verifying configuration for stanza: $PGBACKREST_STANZA"
 if ! pgbackrest --config="$ENV_PGBACKREST_CONFIG_FILE_PATH" --stanza="$ENV_PGBACKREST_STANZA" check; then
-  echo "[$self_filename] ERROR: pgBackRest configuration check failed"
-  kill -TERM 1
-  exit 1
+  echo "[$LOG_PREFIX] ERROR: pgBackRest configuration check failed"
+  terminate_container "Invalid configuration: Check failed"
 fi
 
-# cronジョブ生成 → 失敗したらコンテナ終了
-echo "[$self_filename] Generating backup cron job with schedule: $CRON_SCHEDULE"
-# 一時ファイルにジョブを書く
-# TMP_CRON=$(mktemp)
-# CRON_FILE="/var/spool/cron/crontabs/postgres"
-# cat > "$CRON_FILE" << EOF
-# $CRON_SCHEDULE pgbackrest --config="$PGBACKREST_FINAL_CONFIG_FILE_PATH" --stanza="$PGBACKREST_STANZA" \
-#   --lock-path="$LOCK_PATH" --spool-path="$SPOOL_PATH" backup 2>&1 | sed "s/^/[pgbackrest-cron] /"'
-# EOF
-# cat > /etc/crontabs/postgres << EOF
-# $CRON_SCHEDULE pgbackrest --config="$PGBACKREST_FINAL_CONFIG_FILE_PATH" --stanza="$PGBACKREST_STANZA" \
-#   --lock-path="$LOCK_PATH" --spool-path="$SPOOL_PATH" \
-#   backup >> /var/log/pgbackrest/cron.log 2>&1
-# EOF
+# フルバックアップ実行日時記録用ファイルを用意
+touch "$FULL_TIMESTAMP_FILE"
+chown postgres:postgres "$FULL_TIMESTAMP_FILE"
+chmod 640 "$FULL_TIMESTAMP_FILE"
 
-# postgresユーザーとしてcrontabに登録
-# if ! crontab -u postgres "$TMP_CRON"; then
-#   echo "[cron] ERROR: crontab登録失敗"
-#   kill -TERM 1
-#   exit 1
-# fi
+# 初回フルバックアップ
+SETUP_FLAG="$PGDATA/pgbackrest-setup-done"
+if [ "${BACKUP_ON_STARTUP}" = "true" ] && [ ! -f "$SETUP_FLAG" ]; then
+  echo "[$LOG_PREFIX] Starting initial full backup"
+  
+  if pgbackrest --config="$ENV_PGBACKREST_CONFIG_FILE_PATH" --stanza="$ENV_PGBACKREST_STANZA" backup --type=full; then
+    # 成功したらタイムスタンプを更新
+    date +%s > "$FULL_TIMESTAMP_FILE"
+    echo "[$LOG_PREFIX] Initial full backup succeeded → Timestamp recorded in $FULL_TIMESTAMP_FILE"
+    
+    # フラグ作成（重複実行防止）
+    touch "$SETUP_FLAG"
+  else
+    echo "[$LOG_PREFIX] ERROR: Initial full backup failed"
+    terminate_container "Initial full backup failed"
+  fi
+else
+  echo "[$LOG_PREFIX] Skipping initial full backup"
+fi
 
-# 一時ファイル削除
-#rm -f "$TMP_CRON"
+# cronジョブ生成
+echo "[$LOG_PREFIX] Generating backup cron job with schedule: $CRON_SCHEDULE"
 
-# chown postgres:postgres "$CRON_FILE"
-# chmod 600 "$CRON_FILE"
+# 専用の一時ディレクトリ
+CRON_TMP_DIR="/tmp/cronjobs"
+mkdir -p "$CRON_TMP_DIR"
+chown postgres:postgres "$CRON_TMP_DIR"
+chmod 700 "$CRON_TMP_DIR"
 
-# cronジョブ内容を直接変数に格納
-CRON_JOB="$CRON_SCHEDULE pgbackrest --config=$ENV_PGBACKREST_CONFIG_FILE_PATH --stanza=$ENV_PGBACKREST_STANZA \
-  --lock-path=$LOCK_PATH backup 2>&1 | sed \"s/^/[pgbackrest-cron] /\""
+# 古いファイルを削除（再起動時の残骸をクリア）
+rm -f "$CRON_TMP_DIR"/pgbackrest-crontab*
+
+# 新しいcronジョブファイル（固定名でOK）
+TMP_CRON="$CRON_TMP_DIR/pgbackrest-crontab"
+cat > "$TMP_CRON" << EOF
+$CRON_SCHEDULE /etc/cronjobs/pgbackrest-cronjob.sh
+EOF
 
 # cron構文検証 → 失敗したらコンテナ終了
-# if ! crontab -u postgres "$CRON_FILE"; then
-#   echo "[cron] ERROR: cron構文エラー"
-#   kill -TERM 1
-#   exit 1
-# fi
-# if ! echo "$CRON_JOB" | crontab -u postgres -; then
-#   echo "[cron] ERROR: cron構文エラー - cronジョブの登録に失敗しました"
-#   kill -TERM 1
-#   exit 1
-# fi
-# crontabファイルを作成
-CRONTAB_FILE="/tmp/pgbackrest-crontab"
-echo "$CRON_JOB" > "$CRONTAB_FILE"
-
-# cron構文検証
-echo "[$self_filename] Validating cron syntax..."
-if ! supercronic -test "$CRONTAB_FILE"; then
-  echo "[$self_filename] ERROR: Invalid cron syntax"
-  rm -f "$CRONTAB_FILE"
-  kill -TERM 1
-  exit 1
+echo "[$LOG_PREFIX] Validating cron syntax..."
+if ! supercronic -test "$TMP_CRON"; then
+  echo "[$LOG_PREFIX] ERROR: Invalid cron syntax"
+  rm -f "$TMP_CRON"
+  terminate_container "Cron job registration failed"
 fi
 
 # Start supercronic with formatted output
 cat <<EOF
-[$self_filename] Starting supercronic...
-[$self_filename] Backup schedule: $CRON_SCHEDULE
-[$self_filename] Configuration file: $PGBACKREST_CONFIG_FILE_PATH
-[$self_filename] Cron job: $CRON_JOB
+[$LOG_PREFIX] Starting supercronic...
+[$LOG_PREFIX] Backup schedule: $CRON_SCHEDULE
 ----------------------------------------
 EOF
 
-# supercronicを起動し、ログフォーマットをjqとsedで整える
-exec supercronic -json "$CRONTAB_FILE" 2>&1 | jq 'del(.job.command)' | sed 's/^/[supercronic] /'
+# supercronicを起動し、ログフォーマットをjqで整える
+exec supercronic -json "$TMP_CRON" 2>&1 | jq -r '"[supercronic] \(.level): \(.msg)"'
